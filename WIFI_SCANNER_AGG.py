@@ -1703,31 +1703,21 @@ p{{color:#888;font-size:12px;margin-top:16px;}}
                     if "FF-FF-FF-FF-FF-FF" not in mac:
                         devices[ip] = {"ip": ip, "mac": mac}
 
-        # 2. TCP SYN SCAN (per dispositivi che bloccano ARP/Ping)
-        def tcp_check(ip):
-            if ip in devices: return
-            # Controlla porte comuni per scoprire l'host
-            check_ports = [80, 443, 445, 22, 135, 3389, 5000, 8008]
-            for port in check_ports:
-                try:
-                    res = sr1(IP(dst=ip)/TCP(dport=port, flags="S"), timeout=0.2, verbose=0)
-                    if res:
-                        # Se risponde, proviamo a prendere il MAC
-                        arp_res = sr1(ARP(pdst=ip), timeout=0.5, verbose=0)
-                        mac = arp_res.hwsrc.upper() if arp_res else "—"
-                        devices[ip] = {"ip": ip, "mac": mac}
-                        break
-                except: pass
-
-        base = ".".join(subnet.split(".")[:3])
-        threads = []
-        for i in range(1, 255):
-            ip = f"{base}.{i}"
-            if ip != my_ip:
-                t = threading.Thread(target=tcp_check, args=(ip,), daemon=True)
-                t.start()
-                threads.append(t)
-        for t in threads: t.join()
+        # 2. TCP SYN SCAN OTTIMIZZATO (per dispositivi che bloccano ARP/Ping)
+        try:
+            # Scansione di massa su porte comuni (molto più veloce di thread singoli)
+            ans_tcp, _ = sr(IP(dst=subnet)/TCP(dport=[80, 443, 445, 22, 135], flags="S"), 
+                            timeout=2, verbose=0)
+            
+            for snd, rcv in ans_tcp:
+                ip = rcv.src
+                if ip not in devices and ip != my_ip:
+                    # Per ogni IP nuovo trovato, otteniamo velocemente il MAC via ARP
+                    arp_res = sr1(ARP(pdst=ip), timeout=0.5, verbose=0)
+                    mac = arp_res.hwsrc.upper() if arp_res else "—"
+                    devices[ip] = {"ip": ip, "mac": mac}
+        except:
+            pass
 
         # 3. Arricchimento dati
         results = []
