@@ -1704,20 +1704,35 @@ p{{color:#888;font-size:12px;margin-top:16px;}}
                         devices[ip] = {"ip": ip, "mac": mac}
 
         # 2. TCP SYN SCAN OTTIMIZZATO (per dispositivi che bloccano ARP/Ping)
-        try:
-            # Scansione di massa su porte comuni (molto più veloce di thread singoli)
-            ans_tcp, _ = sr(IP(dst=subnet)/TCP(dport=[80, 443, 445, 22, 135], flags="S"), 
-                            timeout=2, verbose=0)
-            
-            for snd, rcv in ans_tcp:
-                ip = rcv.src
-                if ip not in devices and ip != my_ip:
-                    # Per ogni IP nuovo trovato, otteniamo velocemente il MAC via ARP
-                    arp_res = sr1(ARP(pdst=ip), timeout=0.5, verbose=0)
-                    mac = arp_res.hwsrc.upper() if arp_res else "—"
-                    devices[ip] = {"ip": ip, "mac": mac}
-        except:
-            pass
+        from concurrent.futures import ThreadPoolExecutor
+        
+        base = ".".join(subnet.split(".")[:3])
+        all_ips = [f"{base}.{i}" for i in range(1, 255) if f"{base}.{i}" != my_ip]
+        missing_ips = [ip for ip in all_ips if ip not in devices]
+        
+        def tcp_check(ip):
+            # Porte 80 e 445 sono le più veloci per la scoperta host
+            for port in [80, 445]:
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(0.1)
+                    if sock.connect_ex((ip, port)) == 0:
+                        sock.close()
+                        # Trovato! Recuperiamo il MAC via ARP
+                        arp_res = sr1(ARP(pdst=ip), timeout=0.5, verbose=0)
+                        mac = arp_res.hwsrc.upper() if arp_res else "—"
+                        return (ip, mac)
+                    sock.close()
+                except: pass
+            return None
+
+        if missing_ips:
+            with ThreadPoolExecutor(max_workers=50) as executor:
+                tcp_results = list(executor.map(tcp_check, missing_ips))
+                for res in tcp_results:
+                    if res:
+                        ip, mac = res
+                        devices[ip] = {"ip": ip, "mac": mac}
 
         # 3. Arricchimento dati
         results = []
